@@ -7,7 +7,7 @@ global:
   database:
     type: "external"
     # -- Secret name where database credentials are stored
-    secretName: "airbyte-config-secrets" # e.g. "airbyte-config-secrets"
+    secretName: "airbyte-config" # e.g. "airbyte-config-secrets"
 
     # -- The database host
     host: "pg-sqlproxy-gcloud-sqlproxy.ingestion"
