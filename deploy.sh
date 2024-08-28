@@ -45,8 +45,7 @@ helm upgrade --install pg-sqlproxy rimusz/gcloud-sqlproxy --namespace ingestion 
      --set readinessProbe.enabled=true
 
 # install the airbyte package
-helm upgrade -i --values airbyte-values.yaml airbyte airbyte/airbyte \
-     --timeout=10m0s
+helm upgrade -i --values airbyte-values.yaml airbyte airbyte/airbyte
 
 # port forward the frontend
 kubectl port-forward service/airbyte-airbyte-webapp-svc 8000:80
