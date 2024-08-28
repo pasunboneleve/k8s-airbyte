@@ -1,0 +1,42 @@
+postgresql:
+  enabled: false
+
+global:
+  auth:
+    enabled: false
+  database:
+    type: "external"
+    # -- Secret name where database credentials are stored
+    secretName: "airbyte-config-secrets" # e.g. "airbyte-config-secrets"
+
+    # -- The database host
+    host: "pg-sqlproxy-gcloud-sqlproxy.ingestion"
+    # -- The key within `secretName` where host is stored
+    #hostSecretKey: "" # e.g. "database-host"
+
+    # -- The database port
+    port: "5432"
+    # -- The key within `secretName` where port is stored
+    #portSecretKey: "" # e.g. "database-port"
+
+    # -- The database name
+    database: "airbyte"
+    # -- The key within `secretName` where the database name is stored
+    #databaseSecretKey: "" # e.g. "database-name"
+
+    # -- The database user
+    userSecretKey: "database-user"
+
+    # -- The key within `secretName` where password is stored
+    passwordSecretKey: "database-password" # e.g."database-password"
+
+temporal:
+  extraEnv:
+    - name: POSTGRES_TLS_ENABLED
+      value: "false"
+    - name: POSTGRES_TLS_DISABLE_HOST_VERIFICATION
+      value: "true"
+    - name: SQL_TLS_ENABLED
+      value: "false"
+    - name: SQL_TLS_DISABLE_HOST_VERIFICATION
+      value: "true"
