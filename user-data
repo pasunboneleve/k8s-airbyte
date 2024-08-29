@@ -1,0 +1,207 @@
+#cloud-config
+
+hostname: ingestion
+
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+packages:
+- dnf-plugins-core
+- google-cloud-cli
+- google-cloud-ops-agent
+- postgresql-client
+
+users:
+  - name: airbyte
+    primary_group: airbyte
+    groups: docker
+
+yum_repos:
+  google-cloud-cli:
+    name: Google Cloud CLI
+    baseurl: https://packages.cloud.google.com/yum/repos/cloud-sdk-el9-x86_64
+    enabled: true
+    gpgcheck: true
+    repo_gpgcheck: false
+    gpgkey: https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+write_files:
+# Jinja and files are a bad match. Staying away from these will save headaches.
+- path: /etc/systemd/system/airbyte.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Airbyte
+    Documentation=https://docs.airbyte.com/
+    Requires=network-online.target
+    Requires=docker.service
+    After=network-online.target
+    After=docker.service
+
+    [Service]
+    Type=simple
+    User=airbyte
+    NoNewPrivileges=true
+    SupplementaryGroups=docker
+    EnvironmentFile=/etc/environment
+    ExecStart=/usr/local/bin/airbyte-start.sh
+    ExecStop=kubectl delete namespace ingestion
+    ExecStop=minikube stop
+    Restart=on-failure
+    TimeoutSec=10min
+
+    [Install]
+    WantedBy=multi-user.target
+
+- path: /usr/local/share/airbyte-values.yaml
+  permissions: 0755
+  owner: root
+  content: |
+    postgresql:
+      enabled: false
+
+    global:
+      auth:
+        enabled: false
+      database:
+        type: "external"
+        # -- Secret name where database credentials are stored
+        secretName: "airbyte-config" # e.g. "airbyte-config-secrets"
+
+        # -- The database host
+        host: "pg-sqlproxy-gcloud-sqlproxy.ingestion"
+        # -- The key within `secretName` where host is stored
+        #hostSecretKey: "" # e.g. "database-host"
+
+        # -- The database port
+        port: "5432"
+        # -- The key within `secretName` where port is stored
+        #portSecretKey: "" # e.g. "database-port"
+
+        # -- The database name
+        database: "airbyte"
+        # -- The key within `secretName` where the database name is stored
+        #databaseSecretKey: "" # e.g. "database-name"
+
+        # -- The database user
+        userSecretKey: "database-user"
+
+        # -- The key within `secretName` where password is stored
+        passwordSecretKey: "database-password" # e.g."database-password"
+
+    temporal:
+      extraEnv:
+        - name: POSTGRES_TLS_ENABLED
+          value: "false"
+        - name: POSTGRES_TLS_DISABLE_HOST_VERIFICATION
+          value: "true"
+        - name: SQL_TLS_ENABLED
+          value: "false"
+        - name: SQL_TLS_DISABLE_HOST_VERIFICATION
+          value: "true"
+
+
+- path: /usr/local/bin/airbyte-start.sh
+  permissions: 0755
+  owner: root
+  content: |
+    #!/bin/env bash
+
+    IFS=$'\n\t'
+    set -euox pipefail
+
+    function getSecret {
+      (
+        gcloud secrets versions access latest \
+        --secret="$1" --project=${GCP_PROJECT}
+      )
+    }
+    set +x  # Don't log the password
+    database_password=$(getSecret ingestion_db_password)
+    service_account=$(getSecret ingestion_cloudsql_service_account)
+    set -x  # And now, back to our regularly scheduled programming.
+    db_instance_name=$(getSecret db_instance)
+
+    minikube start
+
+    # set context (must be preexisting)
+    kubectl create namespace ingestion || true
+    kubectl config set-context --current --namespace ingestion
+
+    # set secrets
+    set +x  # Don't log the password
+    echo ${service_account} | kubectl create secret generic service-account \
+            --from-file=json=/dev/stdin \
+            || true
+    kubectl create secret generic airbyte-config \
+            --from-literal=database-user=airbyte \
+            --from-literal=database-password=${database_password} \
+            || true
+    set -x # And now, back to our regularly scheduled programming.
+
+    # helm repos are in userland
+    helm repo add airbyte https://airbytehq.github.io/helm-charts
+    helm repo add rimusz https://charts.rimusz.net
+    helm repo update
+
+    # install cloudsql-proxy
+    helm upgrade --install pg-sqlproxy rimusz/gcloud-sqlproxy --namespace ingestion \
+         --set existingSecret="service-account" \
+         --set existingSecretKey=json \
+         --set cloudsql.instances[0].instance=${db_instance_name} \
+         --set cloudsql.instances[0].project=${GCP_PROJECT} \
+         --set cloudsql.instances[0].region=${GCP_REGION} \
+         --set cloudsql.instances[0].port=5432 -i \
+         --set httpReadinessProbe.enabled=true \
+         --set httpLivenessProbe.enabled=true \
+         --set httpStartupProbe.enabled=true \
+         --set livenessProbe.enabled=true \
+         --set readinessProbe.enabled=true
+
+    # install the airbyte package
+    helm upgrade -i --values /usr/local/share/airbyte-values.yaml airbyte airbyte/airbyte
+
+    # port forward the frontend
+    #
+    # for development
+    # kubectl port-forward service/airbyte-airbyte-webapp-svc 8000:80
+    #
+    # create a service
+    kubectl expose deployment airbyte-webapp --type=NodePort || true
+    # get the IP and PORT of the service
+    minikube service airbyte-webapp --url -n ingestion
+
+runcmd:
+- >
+   echo GCP_PROJECT=$(curl -H 'Metadata-Flavor:Google'
+   metadata.google.internal/computeMetadata/v1/instance/hostname |
+   cut -d. -f3) | sudo tee -a /etc/environment
+
+- echo GCP_ZONE=$(sudo cloud-init query v1.availability-zone) | sudo tee -a /etc/environment
+- echo GCP_REGION=$(sudo cloud-init query v1.region) | sudo tee -a /etc/environment
+
+# docker
+- dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+- dnf install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+- dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+- dnf -y install rsync
+- systemctl daemon-reload
+- systemctl enable docker
+- systemctl start docker
+
+# minikube
+- dnf install -y kubectl
+- curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+- sudo install minikube-linux-amd64 /usr/local/bin/minikube && rm minikube-linux-amd64
+
+# helm
+- curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# #
+# # enable manually after deployment to avoid a race for postgres connections
+# # if Airbyte misbehaves, which is likely.
+# #
+# - systemctl enable airbyte.service
+# - systemctl start airbyte.service
+- reboot
