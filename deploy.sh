@@ -1,7 +1,7 @@
 #!/bin/env bash
 
 IFS=$'\n\t'
-set -uox pipefail
+set -euox pipefail
 
 environment=${1:-"dev"}
 project_name="***REMOVED***-${environment}"
@@ -20,15 +20,19 @@ set -x  # And now, back to our regularly scheduled programming.
 db_instance_name=$(getSecret db_instance)
 
 # set context (must be preexisting)
-# kubectl create namespace ingestion
+kubectl create namespace ingestion || true
 kubectl config set-context --current --namespace ingestion
 
 # set secrets
-kubectl create secret generic service-account --from-file=json=./service-account.json
+kubectl create secret generic service-account \
+        --from-file=json=./service-account.json \
+        || true
+set +x  # Don't log the password
 kubectl create secret generic airbyte-config \
         --from-literal=database-user=airbyte \
-        --from-literal=database-password=${database_password}
-kubectl apply -f airbyte-secret.yaml -n ingestion
+        --from-literal=database-password=${database_password} \
+        || true
+set -x # And now, back to our regularly scheduled programming.
 
 # instal cloudsql-proxy
 helm upgrade --install pg-sqlproxy rimusz/gcloud-sqlproxy --namespace ingestion \
